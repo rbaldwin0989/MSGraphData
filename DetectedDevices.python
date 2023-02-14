@@ -1,78 +1,78 @@
 from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType
+
 import requests
 import time
-from urllib.parse import urlencode
 
-# Set up a Spark session
-spark = SparkSession.builder.appName("MicrosoftGraphAPIToParquet").getOrCreate()
 
-# Define the API endpoint and parameters for the detected apps
+# Define the schema for the managed devices
+devices_schema = StructType([
+    StructField("id", StringType(), True),
+    StructField("deviceId", StringType(), True)
+])
+
+
+def call_api(endpoint):
+    """
+    Calls the Microsoft Graph API using the provided endpoint and returns the response JSON.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    response = requests.get(endpoint, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+
+# Initialize the SparkSession
+spark = SparkSession.builder.appName("MicrosoftGraphAPI").getOrCreate()
+
+# Set the access token for the Microsoft Graph API
+access_token = "<your access token>"
+
+# Call the API to get the detected apps
 api_endpoint = "https://graph.microsoft.com/v1.0/deviceManagement/detectedApps"
-api_params = {"$select": "id,displayName,version,appId,deviceCount"}
+api_params = " $select=id"
+try:
+    response = call_api(api_endpoint + api_params)
 
-# Encode the parameters as part of the URL
-api_endpoint += "?" + urlencode(api_params)
+    # Check if there is another page of data to retrieve
+    while "@odata.nextLink" in response:
+        next_link = response["@odata.nextLink"]
+        response = call_api(next_link)
 
-# Initialize an empty list to store device data
+    # Extract the IDs of the detected apps from the response
+    detected_app_ids = [app["id"] for app in response["value"]]
+except requests.exceptions.HTTPError as e:
+    print(f"Error getting detected apps: {e}")
+    detected_app_ids = []
+
+# Call the API to get the managed devices for each detected app
 devices = []
+for app_id in detected_app_ids:
+    try:
+        # Call the API to get the managed devices for the detected app
+        api_endpoint = f"https://graph.microsoft.com/v1.0/deviceManagement/detectedApps/{app_id}/managedDevices"
+        response = call_api(api_endpoint)
 
-# Loop through all pages of detected app results
-while api_endpoint is not None:
-    # Make the API request for detected apps
-    api_response = requests.get(api_endpoint, headers={"Authorization": "Bearer ACCESS_TOKEN"})
+        # Check if there is another page of data to retrieve
+        while "@odata.nextLink" in response:
+            next_link = response["@odata.nextLink"]
+            response = call_api(next_link)
 
-    # Check the status code of the response
-    if api_response.status_code == 429 and "Retry-After" in api_response.headers:
-        # If we receive a "TooManyRequests" error, wait the specified amount of time and try again
-        retry_after = int(api_response.headers["Retry-After"])
-        print(f"Received TooManyRequests error. Waiting {retry_after} seconds before retrying...")
-        time.sleep(retry_after)
-        continue
+        # Extract the device IDs from the response
+        device_ids = [device["id"] for device in response["value"]]
 
-    # Convert the response to a JSON object
-    api_response_json = api_response.json()
+        # Add the app ID and device IDs to the list
+        for device_id in device_ids:
+            devices.append((app_id, device_id))
+        time.sleep(5)
+    except requests.exceptions.HTTPError as e:
+        print(f"Error getting managed devices for app ID {app_id}: {e}")
 
-    # Loop through the detected apps in the response
-    for app in api_response_json["value"]:
-        # Get the ID of the detected app
-        app_id = app["id"]
-
-        # Define the API endpoint for getting the managed devices for the detected app
-        api_endpoint_devices = f"https://graph.microsoft.com/v1.0/deviceManagement/detectedApps/{app_id}/managedDevices"
-
-        # Initialize the next link for managed devices to be the first page
-        next_link_devices = api_endpoint_devices
-
-        # Loop through all pages of managed device results for this app
-        while next_link_devices is not None:
-            # Make the API request for managed devices
-            api_response_devices = requests.get(next_link_devices, headers={"Authorization": "Bearer ACCESS_TOKEN"})
-
-            # Check the status code of the response
-            if api_response_devices.status_code == 429 and "Retry-After" in api_response_devices.headers:
-                # If we receive a "TooManyRequests" error, wait the specified amount of time and try again
-                retry_after = int(api_response_devices.headers["Retry-After"])
-                print(f"Received TooManyRequests error. Waiting {retry_after} seconds before retrying...")
-                time.sleep(retry_after)
-                continue
-
-            # Check for successful API response before converting to JSON
-            if api_response_devices.ok:
-                # Convert the response to a JSON object and add it to the devices list
-                devices_json = api_response_devices.json()
-                devices.extend(devices_json["value"])
-
-            # Check for next page of results
-            next_link_devices = devices_json.get("@odata.nextLink")
-
-    # Check for next page of detected app results
-    api_endpoint = api_response_json.get("@odata.nextLink")
-
-# Convert the devices list to a PySpark DataFrame
-df = spark.read.json(sc.parallelize(devices))
+# Create a DataFrame from the list of app and device IDs
+devices_df = spark.createDataFrame(devices, schema=devices_schema)
 
 # Write the DataFrame to a Parquet file
-df.write.parquet("detected_apps_managed_devices.parquet")
+devices_df.write.mode("overwrite").parquet("devices.parquet")
 
-# Stop the Spark session
+# Stop the SparkSession
 spark.stop()

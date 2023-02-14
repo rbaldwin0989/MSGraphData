@@ -1,6 +1,7 @@
 from pyspark.sql import SparkSession
 import requests
 import time
+from urllib.parse import urlencode
 
 # Set up a Spark session
 spark = SparkSession.builder.appName("MicrosoftGraphAPIToParquet").getOrCreate()
@@ -9,13 +10,16 @@ spark = SparkSession.builder.appName("MicrosoftGraphAPIToParquet").getOrCreate()
 api_endpoint = "https://graph.microsoft.com/v1.0/deviceManagement/detectedApps"
 api_params = {"$select": "id,displayName,version,appId,deviceCount"}
 
+# Encode the parameters as part of the URL
+api_endpoint += "?" + urlencode(api_params)
+
 # Initialize an empty list to store device data
 devices = []
 
 # Loop through all pages of detected app results
 while api_endpoint is not None:
     # Make the API request for detected apps
-    api_response = requests.get(api_endpoint, headers={"Authorization": "Bearer ACCESS_TOKEN"}, params=api_params)
+    api_response = requests.get(api_endpoint, headers={"Authorization": "Bearer ACCESS_TOKEN"})
 
     # Check the status code of the response
     if api_response.status_code == 429 and "Retry-After" in api_response.headers:

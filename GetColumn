@@ -1,0 +1,23 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from pyspark.sql.types import StringType
+from azure.synapse.artifacts import NotebookExit
+
+# Set up the Spark session
+spark = SparkSession.builder.appName("Read Parquet from ADFS").getOrCreate()
+
+# Define the ADFS location of the Parquet file
+parquet_path = "adl://your-adfs-location.azuredatalakestore.net/your-folder/your-file.parquet"
+
+# Read the Parquet file into a DataFrame
+df = spark.read.format("parquet").load(parquet_path)
+
+# Select one column from the DataFrame
+column_name = "your-column-name"
+column = df.select(col(column_name)).withColumn(column_name, col(column_name).cast(StringType()))
+
+# Convert the selected column to a list and assign it to an exit value
+exit_value = column.select(column_name).rdd.flatMap(lambda x: x).collect()
+
+# Return the exit value to the notebook
+dbutils.notebook.exit(exit_value)
